@@ -7,13 +7,13 @@
 // #define SECRET_STRING "HELLO"
 // #define SECRET_STRING_LENGTH sizeof(SECRET_STRING)
 #define SECRET_STRING_LENGTH 10
-#define TOY_HASH_HEX_CHAR_LENGTH 10// corresponds directly to digest length in python
+#define TOY_HASH_HEX_CHAR_LENGTH 4// corresponds directly to digest length in python
 #define TOY_HASH_LENGTH_IN_BYTES (TOY_HASH_HEX_CHAR_LENGTH/2) // conversion to c comparison
 #define SHA_FULL_HASH_LENGTH 20
 
 char SECRET_STRING[SECRET_STRING_LENGTH + 1];
 unsigned char hash_to_attack[TOY_HASH_LENGTH_IN_BYTES];
-const unsigned char characters[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ ";
+const unsigned char characters[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef";
 
 double When() {
     struct timeval tp;
