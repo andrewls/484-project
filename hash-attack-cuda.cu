@@ -2,12 +2,14 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <sys/time.h>
+#include "sha1.c"
 
 // #define SECRET_STRING "HELLO"
 // #define SECRET_STRING_LENGTH sizeof(SECRET_STRING)
 #define SECRET_STRING_LENGTH 10
-#define TOY_HASH_HEX_CHAR_LENGTH 10// corresponds directly to digest length in python
+#define TOY_HASH_HEX_CHAR_LENGTH 6// corresponds directly to digest length in python
 #define TOY_HASH_LENGTH_IN_BYTES (TOY_HASH_HEX_CHAR_LENGTH/2) // conversion to c comparison
 #define SHA_FULL_HASH_LENGTH 20
 
@@ -20,9 +22,9 @@
 #define BLOCKSIZE 1024
 #define NUM_BLOCKS ALPHABET_LENGTH // each block will take 1 row of character prefixes. It will have to split up the fourth character of the prefix amongst the threads
 
-char SECRET_STRING[SECRET_STRING_LENGTH + 1];
-char host_hash_to_attack[TOY_HASH_LENGTH_IN_BYTES];
-char __device__ hash_to_attack[TOY_HASH_LENGTH_IN_BYTES];
+unsigned char SECRET_STRING[SECRET_STRING_LENGTH + 1];
+unsigned char host_hash_to_attack[TOY_HASH_LENGTH_IN_BYTES];
+unsigned char __device__ hash_to_attack[TOY_HASH_LENGTH_IN_BYTES];
 const char host_characters[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef";
 const __device__ char characters[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef";
 char** prefixes;
@@ -48,14 +50,25 @@ void generate_secret_string() {
   printf("Generated random string %s\n", SECRET_STRING);
 }
 
-void __host__ __device__ toy_hash(char* data, size_t length, char * hash) {
-  char long_hash[SHA_FULL_HASH_LENGTH];
-  SHA1((unsigned char *) data, length, (unsigned char *)long_hash);
-  memcpy(hash, long_hash, TOY_HASH_LENGTH_IN_BYTES * sizeof(char));
+void host_toy_hash(unsigned char* data, size_t length, unsigned char * hash) {
+  unsigned char long_hash[SHA_FULL_HASH_LENGTH];
+  SHA1(data, length, long_hash);
+  memcpy(hash, long_hash, TOY_HASH_LENGTH_IN_BYTES * sizeof(unsigned char));
+  hash[TOY_HASH_LENGTH_IN_BYTES] = NULL;
+  printf("The full hash generated for the string %s is %s. The toy hash is %s, with length %d\n", data, long_hash, hash, TOY_HASH_LENGTH_IN_BYTES);
+}
+
+void __device__ toy_hash(char* data, size_t length, unsigned char * hash) {
+  sha1nfo s;
+  uint8_t long_hash[SHA_FULL_HASH_LENGTH];
+  // here we have to use our own crappy version of sha1 because cuda doesn't support libraries
+  sha1_init(&s);
+  sha1_write(&s, data, length);
+  memcpy(hash, sha1_result(&s), TOY_HASH_LENGTH_IN_BYTES); // this one's a little weird, because we convert from uint8_t to unsigned char, but it will work.
   hash[TOY_HASH_LENGTH_IN_BYTES] = NULL;
 }
 
-int __device__ cuda_strcmp(char* string1, char* string2) {
+int __device__ cuda_strcmp(unsigned char * string1, unsigned char * string2) {
   int i = 0;
   while (1) {
     if (string1[i] == NULL && string2[i] == NULL) return 0;
@@ -66,9 +79,11 @@ int __device__ cuda_strcmp(char* string1, char* string2) {
 
 void __global__ break_hash(char** prefixes, int character_array_length) {
   char string[SECRET_STRING_LENGTH + 1];
-  char hash[TOY_HASH_LENGTH_IN_BYTES + 1];
+  unsigned char hash[TOY_HASH_LENGTH_IN_BYTES + 1];
   int i, j, index;
+  int iterations = 0;
 
+  printf("Working\n");
   // now initialize our string to be just As
   for (i = 0; i < SECRET_STRING_LENGTH; i++) string[i] = characters[0];
   string[SECRET_STRING_LENGTH] = '\0';
@@ -83,9 +98,15 @@ void __global__ break_hash(char** prefixes, int character_array_length) {
   // now we run the same algorithm we would have before, except that we only check through index PREFIX_LENGTH instead of all the way to 0
   i = 0;
   while (i < character_array_length && !done) {
+    iterations++;
     string[SECRET_STRING_LENGTH - 1] = characters[i];
     // hash the current string
     toy_hash(string, SECRET_STRING_LENGTH, hash);
+
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+      printf("String %s hashes to ", string);
+      for (j = 0; j < TOY_HASH_LENGTH_IN_BYTES; j++) printf("%02X", hash[j]);
+    }
 
     if (cuda_strcmp(hash, hash_to_attack) == 0) {
       printf("String %s hashes to ", string);
@@ -122,12 +143,14 @@ void __global__ break_hash(char** prefixes, int character_array_length) {
 
 int main(int argc, char** argv) {
   int i;
+  int blocksize = BLOCKSIZE;
+  int blocks = NUM_BLOCKS;
 
   // start the timer
   double start_time = When();
 
   // first initialize the array of character prefixes
-  cudaMalloc(prefixes, NUMBER_OF_CHARACTER_PREFIXES * sizeof(char));
+  cudaMalloc((void***) &prefixes, NUMBER_OF_CHARACTER_PREFIXES * sizeof(char));
   copy_character_prefixes_to_device(prefixes);
 
   // just store this to avoid recomputing it every time.
@@ -139,18 +162,18 @@ int main(int argc, char** argv) {
   generate_secret_string();
 
   // first hash the string.
-  toy_hash(SECRET_STRING, SECRET_STRING_LENGTH, host_hash_to_attack);
-  // copy it to the device
-  cudaMemcpy(hash_to_attack, host_hash_to_attack, TOY_HASH_LENGTH_IN_BYTES * sizeof(char), cudaMemcpyHostToDevice);
+  host_toy_hash(SECRET_STRING, SECRET_STRING_LENGTH, host_hash_to_attack);
   // and now print it out so we can see it.
   printf("Hashing secret string %s to attack: ", SECRET_STRING);
   for (i = 0; i < TOY_HASH_LENGTH_IN_BYTES; i++) {
     printf("%02X", host_hash_to_attack[i]);
   }
   printf("\n");
+  // copy it to the device
+  cudaMemcpy(hash_to_attack, host_hash_to_attack, TOY_HASH_LENGTH_IN_BYTES * sizeof(char), cudaMemcpyHostToDevice);
 
   // and now launch our kernel
-  break_hash<<< NUM_BLOCKS, BLOCKSIZE >>>(prefixes, strlen(host_characters));
+  break_hash<<< blocks, blocksize >>>(prefixes, strlen(host_characters));
   // once the kernel stops executing, it means that a match was found.
   printf(". Match found in %f seconds.\n", When() - start_time);
   return 0;
