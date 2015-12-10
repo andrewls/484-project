@@ -31,6 +31,7 @@ char** prefixes;
 
 // also, a simple flag to let all CUDA devices know when we're done
 __device__ int done = 0;
+// and a constant to hold the 
 
 // declare this function really quickly so that we can use it
 void __host__ copy_character_prefixes_to_device(char** prefixes);
@@ -77,7 +78,7 @@ int __device__ cuda_strcmp(unsigned char * string1, unsigned char * string2) {
   }
 }
 
-void __global__ break_hash(char** prefixes, int character_array_length) {
+void __global__ break_hash(char** prefixes) {
   char string[SECRET_STRING_LENGTH + 1];
   unsigned char hash[TOY_HASH_LENGTH_IN_BYTES + 1];
   int i, j, index;
@@ -88,7 +89,7 @@ void __global__ break_hash(char** prefixes, int character_array_length) {
   for (i = 0; i < SECRET_STRING_LENGTH; i++) string[i] = characters[0];
   string[SECRET_STRING_LENGTH] = '\0';
 
-  int block_offset = blockIdx.x * character_array_length * character_array_length; // each block gets one full row of prefixes (One letter)
+  int block_offset = blockIdx.x * ALPHABET_LENGTH * ALPHABET_LENGTH; // each block gets one full row of prefixes (One letter)
   int thread_offset = threadIdx.x; // There are 32 * 32 = 1024 prefixes within the block, so each thread takes one
   int prefix_index = block_offset + thread_offset;
   // copy the actual string prefix in.
@@ -97,7 +98,7 @@ void __global__ break_hash(char** prefixes, int character_array_length) {
 
   // now we run the same algorithm we would have before, except that we only check through index PREFIX_LENGTH instead of all the way to 0
   i = 0;
-  while (i < character_array_length && !done) {
+  while (i < ALPHABET_LENGTH && !done) {
     iterations++;
     string[SECRET_STRING_LENGTH - 1] = characters[i];
     // hash the current string
@@ -115,10 +116,10 @@ void __global__ break_hash(char** prefixes, int character_array_length) {
       return;
     }
 
-    if (i == character_array_length - 1) {
+    if (i == ALPHABET_LENGTH - 1) {
       // if it's the last character, we need to bump up the previous characters
       index = SECRET_STRING_LENGTH - 1;
-      while (index >= PREFIX_LENGTH && string[index] == characters[character_array_length - 1]) {
+      while (index >= PREFIX_LENGTH && string[index] == characters[ALPHABET_LENGTH - 1]) {
         string[index] = characters[0];
         index--;
       }
@@ -129,7 +130,7 @@ void __global__ break_hash(char** prefixes, int character_array_length) {
       }
       else {
         int character_index;
-        for (character_index = 0; character_index <= character_array_length; character_index++) {
+        for (character_index = 0; character_index <= ALPHABET_LENGTH; character_index++) {
             if (string[index] == characters[character_index]) break;
         }
         string[index] = characters[character_index + 1];
@@ -173,7 +174,7 @@ int main(int argc, char** argv) {
   cudaMemcpy(hash_to_attack, host_hash_to_attack, TOY_HASH_LENGTH_IN_BYTES * sizeof(char), cudaMemcpyHostToDevice);
 
   // and now launch our kernel
-  break_hash<<< blocks, blocksize >>>(prefixes, strlen(host_characters));
+  break_hash<<< blocks, blocksize >>>(prefixes);
   // once the kernel stops executing, it means that a match was found.
   printf(". Match found in %f seconds.\n", When() - start_time);
   return 0;
